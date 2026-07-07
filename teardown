@@ -1,0 +1,34 @@
+#!/bin/bash
+set -e
+
+read -p "Enter the amount of containers to clean up: " num_containers
+
+NUM_CONTAINERS=num_containers
+START_PORT=3390
+DOCKER_IMAGE="workshop-desktop:latest"
+
+echo "=== Workshop Teardown: $(date) ==="
+echo "Recreating $NUM_CONTAINERS containers fresh from $DOCKER_IMAGE..."
+
+for i in $(seq 1 $NUM_CONTAINERS); do
+  PORT=$((START_PORT + i - 1))
+  CONTAINER_NAME="workshop-${i}"
+
+  echo "--- Resetting $CONTAINER_NAME (port $PORT) ---"
+
+  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+  docker run -d \
+    --name "$CONTAINER_NAME" \
+    -p ${PORT}:3389 \
+    --memory="768m" \
+    --cpus="0.4" \
+    --shm-size="512m" \
+    "$DOCKER_IMAGE"
+
+  echo "  $CONTAINER_NAME reset."
+done
+
+echo ""
+echo "=== Teardown complete: $(date) ==="
+echo "All $NUM_CONTAINERS containers recreated fresh. Guacamole connections unaffected."
