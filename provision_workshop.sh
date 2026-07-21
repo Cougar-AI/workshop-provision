@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
-source .env
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../.env"
 
 DOCKER_IMAGE="workshop-desktop:latest"
 
@@ -187,3 +189,4 @@ echo "Student accounts: student1 through student${NUM_STUDENTS}, password: ${STU
 echo ""
 echo "Each student should log into Guacamole and click '${CONNECTION_GROUP_NAME}'"
 echo "— they'll be auto-routed to whichever container is free."
+

@@ -1,14 +1,13 @@
 #!/bin/bash
 set -e
-source .env
 
-echo "This script shuts down containers used from provision_workshop.sh"
-read -p "Enter the amount of containers to clean up: " num_containers
-# ---------- CONFIG (match your provision_workshop.sh values) ----------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../.env"
+
+
 NUM_CONTAINERS=$num_containers
 NUM_STUDENTS=$num_containers
-# ----------------------------------
-# ---------- CLI ARGUMENTS ----------
+
 FORCE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
