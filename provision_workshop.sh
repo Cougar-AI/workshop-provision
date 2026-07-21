@@ -2,17 +2,13 @@
 set -e
 source .env
 
-
-read -p "Enter the amount of containers to create: " num_containers
 DOCKER_IMAGE="workshop-desktop:latest"
 
 #Default values but can be overrident with --containers or --students
 
 NUM_CONTAINERS=$num_containers
 NUM_STUDENTS=$num_containers
-# ------------------------------------------
 
-# Both flags are optional - falls back to the defaults above if omitted.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --containers)
@@ -25,8 +21,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       echo "Usage: $0 [--containers N] [--students N]"
-      echo "  --containers N   Number of desktop containers to provision (default: $NUM_CONTAINERS)"
-      echo "  --students N     Number of student accounts to create (default: $NUM_STUDENTS)"
+      echo "  --containers N   Number of desktop containers to provision"
+      echo "  --students N     Number of student accounts to create (default: same as --containers)"
       exit 0
       ;;
     *)
@@ -36,9 +32,25 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
- 
-echo "Provisioning $NUM_CONTAINERS containers and $NUM_STUDENTS student accounts."
 
+if [ -z "$NUM_CONTAINERS" ]; then
+  if [ -t 0 ]; then
+    read -p "Enter the amount of containers to create: " NUM_CONTAINERS
+  else
+    echo "ERROR: --containers N is required when running non-interactively." >&2
+    exit 1
+  fi
+fi
+
+# Students default to containers if not explicitly set.
+if [ -z "$NUM_STUDENTS" ]; then
+  NUM_STUDENTS="$NUM_CONTAINERS"
+fi
+
+if ! [[ "$NUM_CONTAINERS" =~ ^[0-9]+$ ]] || [ "$NUM_CONTAINERS" -eq 0 ]; then
+  echo "ERROR: --containers must be a positive integer, got: '$NUM_CONTAINERS'" >&2
+  exit 1
+fi
 
 echo "=== Step 1: Authenticating to Guacamole API ==="
 TOKEN=$(curl -s -X POST "${GUAC_URL}/api/tokens" \
@@ -175,7 +187,3 @@ echo "Student accounts: student1 through student${NUM_STUDENTS}, password: ${STU
 echo ""
 echo "Each student should log into Guacamole and click '${CONNECTION_GROUP_NAME}'"
 echo "— they'll be auto-routed to whichever container is free."
-RAW_RESPONSE=$(curl -s -X POST "${GUAC_URL}/api/tokens" \
-  --data-urlencode "username=${GUAC_ADMIN_USER}" \
-  --data-urlencode "password=${GUAC_ADMIN_PASS}")
-echo "DEBUG RAW: $RAW_RESPONSE"
