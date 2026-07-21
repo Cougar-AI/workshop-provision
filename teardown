@@ -1,34 +1,142 @@
 #!/bin/bash
 set -e
+source .env
 
+echo "This script shuts down containers used from provision_workshop.sh"
 read -p "Enter the amount of containers to clean up: " num_containers
-
-NUM_CONTAINERS=num_containers
-START_PORT=3390
-DOCKER_IMAGE="workshop-desktop:latest"
-
-echo "=== Workshop Teardown: $(date) ==="
-echo "Recreating $NUM_CONTAINERS containers fresh from $DOCKER_IMAGE..."
-
-for i in $(seq 1 $NUM_CONTAINERS); do
-  PORT=$((START_PORT + i - 1))
-  CONTAINER_NAME="workshop-${i}"
-
-  echo "--- Resetting $CONTAINER_NAME (port $PORT) ---"
-
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-
-  docker run -d \
-    --name "$CONTAINER_NAME" \
-    -p ${PORT}:3389 \
-    --memory="768m" \
-    --cpus="0.4" \
-    --shm-size="512m" \
-    "$DOCKER_IMAGE"
-
-  echo "  $CONTAINER_NAME reset."
+# ---------- CONFIG (match your provision_workshop.sh values) ----------
+NUM_CONTAINERS=$num_containers
+NUM_STUDENTS=$num_containers
+# ----------------------------------
+# ---------- CLI ARGUMENTS ----------
+FORCE=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --containers)
+      NUM_CONTAINERS="$2"
+      shift 2
+      ;;
+    --students)
+      NUM_STUDENTS="$2"
+      shift 2
+      ;;
+    --force)
+      FORCE=true
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: $0 [--containers N] [--students N] [--force]"
+      echo "  --containers N   Number of workshop-N containers to remove (default: $NUM_CONTAINERS)"
+      echo "  --students N     Number of studentN accounts to remove (default: $NUM_STUDENTS)"
+      echo "  --force          Skip the confirmation prompt"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      exit 1
+      ;;
+  esac
 done
 
+echo "This will permanently remove:"
+echo "  - Docker containers: workshop-1 through workshop-${NUM_CONTAINERS}"
+echo "  - Guacamole connections: workshop-1 through workshop-${NUM_CONTAINERS}"
+echo "  - The '${CONNECTION_GROUP_NAME}' connection group"
+echo "  - Guacamole accounts: student1 through student${NUM_STUDENTS}"
 echo ""
-echo "=== Teardown complete: $(date) ==="
-echo "All $NUM_CONTAINERS containers recreated fresh. Guacamole connections unaffected."
+
+if [ "$FORCE" = false ]; then
+  read -p "Are you sure you want to continue? (yes/no): " CONFIRM
+  if [[ "$CONFIRM" == "no" || "$CONFIRM" == "n" ]]; then
+    echo "Aborted."
+    exit 0
+  fi
+fi
+
+echo "=== Step 1: Authenticating to Guacamole API ==="
+TOKEN=$(curl -s -X POST "${GUAC_URL}/api/tokens" \
+  --data-urlencode "username=${GUAC_ADMIN_USER}" \
+  --data-urlencode "password=${GUAC_ADMIN_PASS}" \
+  | grep -o '"authToken":"[^"]*"' | cut -d'"' -f4)
+
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: Failed to authenticate. Check credentials/URL."
+  exit 1
+fi
+echo "Got auth token."
+
+API="${GUAC_URL}/api/session/data/${GUAC_DATASOURCE}"
+
+echo "=== Step 2: Removing Docker containers ==="
+for i in $(seq 1 $NUM_CONTAINERS); do
+  CONTAINER_NAME="workshop-${i}"
+  if docker rm -f "$CONTAINER_NAME" 2>/dev/null; then
+    echo "  Removed container $CONTAINER_NAME"
+  else
+    echo "  Container $CONTAINER_NAME not found, skipping"
+  fi
+done
+
+echo "=== Step 3: Removing Guacamole connections ==="
+# Look up all connections so we can match by name -> identifier
+ALL_CONNECTIONS=$(curl -s -X GET "${API}/connections?token=${TOKEN}")
+
+for i in $(seq 1 $NUM_CONTAINERS); do
+  CONTAINER_NAME="workshop-${i}"
+
+  CONN_ID=$(python3 -c "
+import json
+data = json.loads('''$ALL_CONNECTIONS''')
+for k, v in data.items():
+    if v.get('name') == '${CONTAINER_NAME}':
+        print(v.get('identifier'))
+        break
+" 2>/dev/null)
+
+  if [ -n "$CONN_ID" ]; then
+    curl -s -X DELETE "${API}/connections/${CONN_ID}?token=${TOKEN}" > /dev/null
+    echo "  Removed connection $CONTAINER_NAME (ID $CONN_ID)"
+  else
+    echo "  Connection $CONTAINER_NAME not found, skipping"
+  fi
+done
+
+echo "=== Step 4: Removing the connection group ==="
+ALL_GROUPS=$(curl -s -X GET "${API}/connectionGroups?token=${TOKEN}")
+
+GROUP_ID=$(python3 -c "
+import json
+data = json.loads('''$ALL_GROUPS''')
+for k, v in data.items():
+    if v.get('name') == '${CONNECTION_GROUP_NAME}':
+        print(v.get('identifier'))
+        break
+" 2>/dev/null)
+
+if [ -n "$GROUP_ID" ]; then
+  curl -s -X DELETE "${API}/connectionGroups/${GROUP_ID}?token=${TOKEN}" > /dev/null
+  echo "  Removed connection group '${CONNECTION_GROUP_NAME}' (ID $GROUP_ID)"
+else
+  echo "  Connection group '${CONNECTION_GROUP_NAME}' not found, skipping"
+fi
+
+echo "=== Step 5: Removing student accounts ==="
+for i in $(seq 1 $NUM_STUDENTS); do
+  STUDENT_USER="student${i}"
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "${API}/users/${STUDENT_USER}?token=${TOKEN}")
+
+  if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "200" ]; then
+    echo "  Removed user $STUDENT_USER"
+  else
+    echo "  User $STUDENT_USER not found or already removed (HTTP $HTTP_CODE)"
+  fi
+done
+
+echo "=== Step 6: Cleaning up Docker image build cache (optional disk reclaim) ==="
+docker builder prune -f > /dev/null 2>&1 || true
+echo "  Build cache pruned."
+
+echo ""
+echo "=== CLEANUP COMPLETE ==="
+echo "All workshop containers, connections, the connection group, and student accounts have been removed."
+echo "The workshop-desktop:latest image itself was NOT removed - run 'docker rmi workshop-desktop:latest' manually if you want to remove that too."

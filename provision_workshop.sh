@@ -1,24 +1,15 @@
 #!/bin/bash
 set -e
+source .env
 
-GUAC_URL="https://workshops.cougarai.org/guacamole"
-GUAC_DATASOURCE="mysql"
-GUAC_ADMIN_USER="Cai_admin"
-GUAC_ADMIN_PASS="Spicy_CAIGuac2023?:#@"
 
-START_PORT=3390
-WORKSHOP_HOST="10.10.30.10"
-RDP_USERNAME="caiworkshopstest"
-RDP_PASSWORD="CAI_2026!"
-
-CONNECTION_GROUP_NAME="Workshop Pool"
-STUDENT_PASSWORD="CAI_2026!"
+read -p "Enter the amount of containers to create: " num_containers
 DOCKER_IMAGE="workshop-desktop:latest"
 
 #Default values but can be overrident with --containers or --students
 
-NUM_CONTAINERS=10
-NUM_STUDENTS=10
+NUM_CONTAINERS=$num_containers
+NUM_STUDENTS=$num_containers
 # ------------------------------------------
 
 # Both flags are optional - falls back to the defaults above if omitted.
@@ -116,8 +107,8 @@ for i in $(seq 1 $NUM_CONTAINERS); do
   docker run -d \
     --name "$CONTAINER_NAME" \
     -p ${PORT}:3389 \
-    --memory="768m" \
-    --cpus="0.4" \
+    --memory="1.3g" \
+    --cpus="0.8" \
     --shm-size="512m"\
     "$DOCKER_IMAGE"
 
@@ -184,3 +175,7 @@ echo "Student accounts: student1 through student${NUM_STUDENTS}, password: ${STU
 echo ""
 echo "Each student should log into Guacamole and click '${CONNECTION_GROUP_NAME}'"
 echo "— they'll be auto-routed to whichever container is free."
+RAW_RESPONSE=$(curl -s -X POST "${GUAC_URL}/api/tokens" \
+  --data-urlencode "username=${GUAC_ADMIN_USER}" \
+  --data-urlencode "password=${GUAC_ADMIN_PASS}")
+echo "DEBUG RAW: $RAW_RESPONSE"
