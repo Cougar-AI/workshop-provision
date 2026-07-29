@@ -48,7 +48,7 @@ docker compose up --build
 
 ## Configuration
 Refer to .env.example. Stricly on the CougarAI server only adjust to your application.
-
+```
 GUAC_URL=""
 GUAC_DATASOURCE=""
 GUAC_ADMIN_USER=""
@@ -78,6 +78,7 @@ API_KEY=""
 PROVISION_SCRIPT=""
 TEARDOWN_SCRIPT=""
 RESET_SCRIPT=""
+```
 *(fill in the actual environment variables / params your image exposes)*
 
 ## Resource Parameters
