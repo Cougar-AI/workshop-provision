@@ -22,7 +22,7 @@ Docker-based provisioning setup for the CougarAI workshop environment. This imag
 Clone the repository:
 
 ```bash
-git clone https://github.com/<org>/workshop-provision.git
+git clone [https://github.com/<org>/workshop-provision.git](https://github.com/Cougar-AI/workshop-provision.git)
 cd workshop-provision
 ```
 
