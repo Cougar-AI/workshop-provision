@@ -81,10 +81,6 @@ RESET_SCRIPT=""
 ```
 *(fill in the actual environment variables / params your image exposes)*
 
-## Resource Parameters
-
-Briefly describe what OS/resource settings this image enforces (CPU/memory limits, base OS version, etc.) so users know what to expect before running it.
-
 ## Starting the application
 Once you adjust the .env to your settings. navigate to manually run the script.
 ```
