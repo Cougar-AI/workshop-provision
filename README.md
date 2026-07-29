@@ -22,7 +22,7 @@ Docker-based provisioning setup for the CougarAI workshop environment. This imag
 Clone the repository:
 
 ```bash
-git clone [https://github.com/<org>/workshop-provision.git](https://github.com/Cougar-AI/workshop-provision.git)
+git clone https://github.com/Cougar-AI/workshop-provision.git
 cd workshop-provision
 ```
 
@@ -123,21 +123,22 @@ python ./workshop_api.py
 To verify that the website server and workshop are working together:
 
 ```
-Status Check
+#Status Check
 curl -s -H "X-API-Key: $WORKSHOP_API_KEY" "$WORKSHOP_API_URL/admin/workshops/status" | jq
 ```
 
 ```
-Auth Check
+#Auth Check
 curl -s -H "X-API-Key: wrong-key" "$WORKSHOP_API_URL/admin/workshops/status"
 ```
 
 ```
+#Gets the current requirements
 curl -s -H "X-API-Key: $WORKSHOP_API_KEY" "$WORKSHOP_API_URL/admin/workshops/requirements" | jq
 ```
 
 ```
-Preview Diff Requirements
+#Preview Diff Requirements
 curl -s -X POST \
   -H "X-API-Key: $WORKSHOP_API_KEY" \
   -H "Content-Type: application/json" \
@@ -146,7 +147,7 @@ curl -s -X POST \
 ```
 
 ```
-Provisioning 1 container
+#Provisioning 1 container
 curl -s -X POST \
   -H "X-API-Key: $WORKSHOP_API_KEY" \
   -H "Content-Type: application/json" \
@@ -155,12 +156,12 @@ curl -s -X POST \
 ```
 
 ```
-Job Status grab it from any of the scripts
+#Job Status grab it from any of the scripts
 curl -s -H "X-API-Key: $WORKSHOP_API_KEY" "$WORKSHOP_API_URL/admin/workshops/jobs/<job_id_CHANGE_ME>" | jq
 ```
 
 ```
-Reset
+#Reset
 curl -s -X POST \
   -H "X-API-Key: $WORKSHOP_API_KEY" \
   -H "Content-Type: application/json" \
@@ -169,7 +170,7 @@ curl -s -X POST \
 ```
 
 ```
-Teardown
+#Teardown
 curl -s -X POST \
   -H "X-API-Key: $WORKSHOP_API_KEY" \
   -H "Content-Type: application/json" \
