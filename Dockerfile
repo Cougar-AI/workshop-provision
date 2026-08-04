@@ -21,7 +21,12 @@ RUN --mount=type=cache,target=/var/cache/apt \
     python3 \
     python3-pip \
     python3-venv \
+    git \
     && apt-get clean \
+# Add networking if needed and cyber security packages for labs 
+# iproute2 \
+# iputils-ping \ 
+# net-tools \ 
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /usr/share/doc/* /usr/share/man/*
 
  
@@ -32,7 +37,7 @@ ENV PATH="/root/.local/bin:${PATH}"
 # ---- Workshop Python venv (built from requirements.txt via uv) ----
 COPY requirements.txt /tmp/requirements.txt
 RUN uv venv /opt/workshop-venv && \
-    uv pip install --python /opt/workshop-venv/bin/python --no-cache -r /tmp/requirements.txt && \
+    uv pip install --python /opt/workshop-venv/bin/python --no-cache ipykernel -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt && \
     find /opt/workshop-venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null; \
     find /opt/workshop-venv -type d -name "tests" -exec rm -rf {} + 2>/dev/null; \
@@ -95,6 +100,9 @@ RUN sed -i 's|Exec=.*/code|& --no-sandbox|' /usr/share/applications/code.desktop
 
 RUN mkdir -p /var/run/dbus
 
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 EXPOSE 3389
 
-CMD mkdir -p /var/run/dbus && dbus-daemon --system --fork && xrdp-sesman && xrdp --nodaemon
+CMD ["/entrypoint.sh"]

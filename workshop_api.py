@@ -18,6 +18,7 @@ REQUIREMENTS_PATH = Path(os.environ.get("REQUIREMENTS_PATH"))
 DOCKERFILE_DIR = Path(os.environ.get("DOCKERFILE_DIR"))
 DOCKER_IMAGE = os.environ.get("DOCKER_IMAGE")
 API_KEY = os.environ.get("WORKSHOP_API_KEY")
+DEFAULT_REPO_URL = os.environ.get("DEFAULT_GITHUB_REPO_URL", "https://github.com/LemurTech22/guacamole-test-repo.git")
 
 PROVISION_SCRIPT = SCRIPTS_DIR / os.environ.get("PROVISION_SCRIPT", "provision_workshop.sh")
 TEARDOWN_SCRIPT = SCRIPTS_DIR / os.environ.get("TEARDOWN_SCRIPT", "teardown")
@@ -74,15 +75,20 @@ def _append_log(job_id, line):
             _jobs[job_id]["log"] = _jobs[job_id]["log"][-5000:]
 
 
-def _run_job_stages(job_id, stages, cwd=None):
+def _run_job_stages(job_id, stages, cwd=None, extra_env=None):
     """
     stages: list of (label, cmd) tuples run sequentially.
+    extra_env: dict of additional env vars merged on top of the current
+    process environment (e.g. GITHUB_REPO_URL), so downstream shell
+    scripts like PROVISION_SCRIPT can read them and forward them into
+    `docker run -e ...`.
     Updates job['stage'], job['stage_index'], job['total_stages'] so a
     frontend can render a progress bar per phase, not just done/not-done.
     """
     total = len(stages)
     _update_job(job_id, status="running", started_at=time.time(),
                 total_stages=total, stage_index=0)
+    full_env = {**os.environ, **(extra_env or {})}
     try:
         for i, (label, cmd) in enumerate(stages, start=1):
             _update_job(job_id, stage=label, stage_index=i)
@@ -90,6 +96,7 @@ def _run_job_stages(job_id, stages, cwd=None):
             proc = subprocess.Popen(
                 cmd,
                 cwd=cwd,
+                env=full_env,
                 stdin=subprocess.DEVNULL,   # never block on a prompt
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -108,9 +115,14 @@ def _run_job_stages(job_id, stages, cwd=None):
         _update_job(job_id, status="failed", exit_code=-1, finished_at=time.time())
 
 
-def _launch_stages(job_type, stages, args, cwd=None):
+def _launch_stages(job_type, stages, args, cwd=None, extra_env=None):
     job_id = _new_job(job_type, args)
-    t = threading.Thread(target=_run_job_stages, args=(job_id, stages), kwargs={"cwd": cwd}, daemon=True)
+    t = threading.Thread(
+        target=_run_job_stages,
+        args=(job_id, stages),
+        kwargs={"cwd": cwd, "extra_env": extra_env},
+        daemon=True,
+    )
     t.start()
     return job_id
 
@@ -145,6 +157,7 @@ def _do_pipeline_run(data):
     num_students = data.get("num_students", num_containers)
     packages = data.get("packages")
     skip_build = bool(data.get("skip_build"))
+    repo_url = (data.get("repo_url") or "").strip() or DEFAULT_REPO_URL
 
     if packages:
         REQUIREMENTS_PATH.write_text("\n".join(packages) + "\n")
@@ -161,9 +174,10 @@ def _do_pipeline_run(data):
         "pipeline",
         stages,
         {"num_containers": num_containers, "num_students": num_students,
-         "packages": packages, "skip_build": skip_build},
+         "packages": packages, "skip_build": skip_build, "repo_url": repo_url},
+        extra_env={"GITHUB_REPO_URL": repo_url},
     )
-    return jsonify({"job_id": job_id, "stages": [s[0] for s in stages]}), 202
+    return jsonify({"job_id": job_id, "stages": [s[0] for s in stages], "repo_url": repo_url}), 202
 
 
 @app.route("/admin/workshops/pipeline/run", methods=["POST"])
@@ -195,6 +209,7 @@ def _do_provision(data):
     num_students = data.get("num_students", num_containers)
     packages = data.get("packages")
     force_rebuild = bool(data.get("force_rebuild"))
+    repo_url = (data.get("repo_url") or "").strip() or DEFAULT_REPO_URL
 
     if packages:
         REQUIREMENTS_PATH.write_text("\n".join(packages) + "\n")
@@ -216,9 +231,11 @@ def _do_provision(data):
 	 "num_students": num_students,
          "packages": packages, 
 	 "force_rebuild": force_rebuild,
-	 "previous_count": current},
+	 "previous_count": current,
+	 "repo_url": repo_url},
+        extra_env={"GITHUB_REPO_URL": repo_url},
     )
-    return jsonify({"job_id": job_id, "previous_count": current, "target_count": num_containers}), 202
+    return jsonify({"job_id": job_id, "previous_count": current, "target_count": num_containers, "repo_url": repo_url}), 202
 
 
 @app.route("/admin/workshops/provision", methods=["POST"])

@@ -54,6 +54,12 @@ if ! [[ "$NUM_CONTAINERS" =~ ^[0-9]+$ ]] || [ "$NUM_CONTAINERS" -eq 0 ]; then
   exit 1
 fi
 
+if [ -n "$GITHUB_REPO_URL" ]; then
+  echo "Using workshop repo: $GITHUB_REPO_URL"
+else
+  echo "No GITHUB_REPO_URL provided, containers will use the image's default repo."
+fi
+
 echo "=== Step 1: Authenticating to Guacamole API ==="
 TOKEN=$(curl -s -X POST "${GUAC_URL}/api/tokens" \
   --data-urlencode "username=${GUAC_ADMIN_USER}" \
@@ -124,6 +130,7 @@ for i in $(seq 1 $NUM_CONTAINERS); do
     --memory="1.3g" \
     --cpus="0.8" \
     --shm-size="512m"\
+    -e GITHUB_REPO_URL="${GITHUB_REPO_URL}" \
     "$DOCKER_IMAGE"
 
   # Create the matching Guacamole connection inside the balancing group
@@ -189,4 +196,3 @@ echo "Student accounts: student1 through student${NUM_STUDENTS}, password: ${STU
 echo ""
 echo "Each student should log into Guacamole and click '${CONNECTION_GROUP_NAME}'"
 echo "— they'll be auto-routed to whichever container is free."
-
