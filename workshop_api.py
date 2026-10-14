@@ -24,8 +24,19 @@ PROVISION_SCRIPT = SCRIPTS_DIR / os.environ.get("PROVISION_SCRIPT", "provision_w
 TEARDOWN_SCRIPT = SCRIPTS_DIR / os.environ.get("TEARDOWN_SCRIPT", "teardown")
 RESET_SCRIPT = SCRIPTS_DIR / os.environ.get("RESET_SCRIPT", "reset_environments")
 
+# Same values provision_workshop.sh reads from .env — used to tell officers how students log in.
+STUDENT_PASSWORD = os.environ.get("STUDENT_PASSWORD")
+CONNECTION_GROUP_NAME = os.environ.get("CONNECTION_GROUP_NAME")
+WORKSHOP_LOGIN_URL = os.environ.get("WORKSHOP_PUBLIC_URL") or os.environ.get("GUAC_URL")
+
 _jobs_lock = threading.Lock()
 _jobs = {}  # job_id -> dict
+
+
+class JobConflict(Exception):
+    """Raised when a container job is requested while another one is still queued/running."""
+    def __init__(self, active_job):
+        self.active_job = active_job
 
 
 # ---------------------------------------------------------------------------
@@ -42,9 +53,33 @@ def _read_requirements():
     return [l.strip() for l in REQUIREMENTS_PATH.read_text().splitlines() if l.strip()]
 
 
+def _find_active_job():
+    """Caller must hold _jobs_lock."""
+    for job in _jobs.values():
+        if job["status"] in ("queued", "running"):
+            return job
+    return None
+
+
+def _ensure_no_active_job():
+    """
+    Pipeline/provision/teardown/reset all drive the same docker containers and
+    Guacamole connections, so only one may run at a time. Called before any
+    side effects (e.g. rewriting requirements.txt mid-build); _new_job re-checks
+    under the lock to close the race between two simultaneous requests.
+    """
+    with _jobs_lock:
+        active = _find_active_job()
+    if active:
+        raise JobConflict(active)
+
+
 def _new_job(job_type, args):
     job_id = uuid.uuid4().hex[:12]
     with _jobs_lock:
+        active = _find_active_job()
+        if active:
+            raise JobConflict(active)
         _jobs[job_id] = {
             "job_id": job_id,
             "type": job_type,
@@ -75,13 +110,15 @@ def _append_log(job_id, line):
             _jobs[job_id]["log"] = _jobs[job_id]["log"][-5000:]
 
 
-def _run_job_stages(job_id, stages, cwd=None, extra_env=None):
+def _run_job_stages(job_id, stages, cwd=None, extra_env=None, on_success=None):
     """
     stages: list of (label, cmd) tuples run sequentially.
     extra_env: dict of additional env vars merged on top of the current
     process environment (e.g. GITHUB_REPO_URL), so downstream shell
     scripts like PROVISION_SCRIPT can read them and forward them into
     `docker run -e ...`.
+    on_success: extra fields merged into the job only if every stage
+    succeeds (e.g. student login details after provisioning).
     Updates job['stage'], job['stage_index'], job['total_stages'] so a
     frontend can render a progress bar per phase, not just done/not-done.
     """
@@ -109,22 +146,42 @@ def _run_job_stages(job_id, stages, cwd=None, extra_env=None):
             if proc.returncode != 0:
                 _update_job(job_id, status="failed", exit_code=proc.returncode, finished_at=time.time())
                 return
-        _update_job(job_id, status="succeeded", exit_code=0, finished_at=time.time())
+        _update_job(job_id, status="succeeded", exit_code=0, finished_at=time.time(), **(on_success or {}))
     except Exception as e:
         _append_log(job_id, f"FATAL: {e}")
         _update_job(job_id, status="failed", exit_code=-1, finished_at=time.time())
 
 
-def _launch_stages(job_type, stages, args, cwd=None, extra_env=None):
+def _launch_stages(job_type, stages, args, cwd=None, extra_env=None, on_success=None):
     job_id = _new_job(job_type, args)
     t = threading.Thread(
         target=_run_job_stages,
         args=(job_id, stages),
-        kwargs={"cwd": cwd, "extra_env": extra_env},
+        kwargs={"cwd": cwd, "extra_env": extra_env, "on_success": on_success},
         daemon=True,
     )
     t.start()
     return job_id
+
+
+def _access_info(num_students):
+    """Login details for the accounts provision_workshop.sh creates (student1..studentN)."""
+    n = int(num_students)
+    group = CONNECTION_GROUP_NAME or "the workshop connection group"
+    return {
+        "access": {
+            "login_url": WORKSHOP_LOGIN_URL,
+            "username": "student1" if n == 1 else f"student1 – student{n}",
+            "usernames": [f"student{i}" for i in range(1, n + 1)],
+            "password": STUDENT_PASSWORD,
+            "connection_group": CONNECTION_GROUP_NAME,
+            "access_instructions": (
+                f"Each student opens {WORKSHOP_LOGIN_URL or 'the Guacamole login page'}, signs in with their "
+                f"assigned studentN account and the shared password, then clicks '{group}'. "
+                "They are routed automatically to a free virtual machine desktop in the browser."
+            ),
+        }
+    }
 
 def _current_container_count():
     """Returns the number of workshop-* containers currently on the host."""
@@ -146,6 +203,17 @@ def check_api_key():
         return jsonify({"error": "unauthorized"}), 401
 
 
+@app.errorhandler(JobConflict)
+def job_conflict(e):
+    job = e.active_job
+    return jsonify({
+        "error": f"a {job['type']} job ({job['job_id']}) is already {job['status']} — wait for it to finish before starting another",
+        "active_job_id": job["job_id"],
+        "active_job_type": job["type"],
+        "active_job_status": job["status"],
+    }), 409
+
+
 # ---------------------------------------------------------------------------
 # Pipeline — full "start from scratch" flow (build + provision in one job)
 # ---------------------------------------------------------------------------
@@ -153,6 +221,7 @@ def _do_pipeline_run(data):
     num_containers = data.get("num_containers")
     if not num_containers:
         return jsonify({"error": "num_containers is required"}), 400
+    _ensure_no_active_job()
 
     num_students = data.get("num_students", num_containers)
     packages = data.get("packages")
@@ -176,6 +245,7 @@ def _do_pipeline_run(data):
         {"num_containers": num_containers, "num_students": num_students,
          "packages": packages, "skip_build": skip_build, "repo_url": repo_url},
         extra_env={"GITHUB_REPO_URL": repo_url},
+        on_success=_access_info(num_students),
     )
     return jsonify({"job_id": job_id, "stages": [s[0] for s in stages], "repo_url": repo_url}), 202
 
@@ -190,7 +260,7 @@ def pipeline_run():
 # Provisioning lifecycle
 # ---------------------------------------------------------------------------
 def _do_provision(data):
-
+    _ensure_no_active_job()
     current = _current_container_count()
 
     if "add" in data:
@@ -234,6 +304,7 @@ def _do_provision(data):
 	 "previous_count": current,
 	 "repo_url": repo_url},
         extra_env={"GITHUB_REPO_URL": repo_url},
+        on_success=_access_info(num_students),
     )
     return jsonify({"job_id": job_id, "previous_count": current, "target_count": num_containers, "repo_url": repo_url}), 202
 
@@ -244,6 +315,7 @@ def provision_route():
 
 
 def _do_teardown(data):
+    _ensure_no_active_job()
     if data.get("all"):
         num_containers = _current_container_count()
         if num_containers == 0:
@@ -267,6 +339,7 @@ def teardown_route():
     return _do_teardown(request.get_json(silent=True) or {})
 
 def _do_reset(data):
+    _ensure_no_active_job()
     if data.get("all"):
         num_containers = _current_container_count()
         if num_containers == 0:
