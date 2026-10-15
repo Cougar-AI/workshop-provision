@@ -10,9 +10,17 @@ DOCKER_IMAGE="workshop-desktop:latest"
 
 NUM_CONTAINERS=$num_containers
 NUM_STUDENTS=$num_containers
+# By default containers that are already running are left alone, so adding VMs
+# doesn't kick connected students. --recreate (used by the full pipeline after
+# an image rebuild) replaces every container with a fresh one.
+RECREATE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --recreate)
+      RECREATE=true
+      shift
+      ;;
     --containers)
       NUM_CONTAINERS="$2"
       shift 2
@@ -22,8 +30,9 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -h|--help)
-      echo "Usage: $0 [--containers N] [--students N]"
+      echo "Usage: $0 [--containers N] [--students N] [--recreate]"
       echo "  --containers N   Number of desktop containers to provision"
+      echo "  --recreate       Replace containers that are already running (default: keep them)"
       echo "  --students N     Number of student accounts to create (default: same as --containers)"
       exit 0
       ;;
@@ -114,29 +123,45 @@ fi
 echo "Using group '${CONNECTION_GROUP_NAME}' with ID ${GROUP_ID}"
 
 echo "=== Step 3: Spinning up containers + creating connections ==="
+FAILURES=0
+
+# Existing connections in the group, as "name<TAB>identifier" lines, so re-provisioning
+# updates them in place instead of failing with "already exists".
+EXISTING_CONNECTIONS=$(curl -s "${API}/connectionGroups/${GROUP_ID}/tree?token=${TOKEN}" | python3 -c '
+import json, sys
+try:
+    tree = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for conn in tree.get("childConnections", []) or []:
+    print(conn.get("name"), conn.get("identifier"), sep="\t")
+')
+
 for i in $(seq 1 $NUM_CONTAINERS); do
   PORT=$((START_PORT + i - 1))
   CONTAINER_NAME="workshop-${i}"
 
   echo "--- Container $i: $CONTAINER_NAME on port $PORT ---"
 
-  # Remove any pre-existing container with this name
-  docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+  STATE=$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || true)
+  if [ "$STATE" = "running" ] && [ "$RECREATE" = false ]; then
+    echo "  Already running, leaving it alone (use --recreate to replace it)"
+  else
+    # Remove any stopped/old container with this name (or a running one when --recreate)
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-  # Start the container
-  docker run -d \
-    --name "$CONTAINER_NAME" \
-    -p ${PORT}:3389 \
-    --memory="1.3g" \
-    --cpus="0.8" \
-    --shm-size="512m"\
-    -e GITHUB_REPO_URL="${GITHUB_REPO_URL}" \
-    "$DOCKER_IMAGE"
+    docker run -d \
+      --name "$CONTAINER_NAME" \
+      -p ${PORT}:3389 \
+      --memory="1.3g" \
+      --cpus="0.8" \
+      --shm-size="512m"\
+      -e GITHUB_REPO_URL="${GITHUB_REPO_URL}" \
+      "$DOCKER_IMAGE" >/dev/null
+    echo "  Container started"
+  fi
 
-  # Create the matching Guacamole connection inside the balancing group
-  CONN_RESPONSE=$(curl -s -X POST "${API}/connections?token=${TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "{
+  CONN_BODY="{
       \"parentIdentifier\": \"${GROUP_ID}\",
       \"name\": \"${CONTAINER_NAME}\",
       \"protocol\": \"rdp\",
@@ -149,15 +174,30 @@ for i in $(seq 1 $NUM_CONTAINERS); do
         \"ignore-cert\": \"true\"
       },
       \"attributes\": {}
-    }")
+    }"
 
-  CONN_ID=$(echo "$CONN_RESPONSE" | grep -o '"identifier":"[^"]*"' | cut -d'"' -f4)
-
-  if [ -z "$CONN_ID" ]; then
-    echo "  WARNING: connection creation may have failed for $CONTAINER_NAME"
-    echo "  Response: $CONN_RESPONSE"
+  EXISTING_ID=$(printf '%s\n' "$EXISTING_CONNECTIONS" | awk -F'\t' -v n="$CONTAINER_NAME" '$1 == n { print $2; exit }')
+  if [ -n "$EXISTING_ID" ]; then
+    # Keep the same connection (and ID) but refresh host/port/credentials.
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "${API}/connections/${EXISTING_ID}?token=${TOKEN}" \
+      -H "Content-Type: application/json" -d "$CONN_BODY")
+    if [ "$CODE" = "204" ] || [ "$CODE" = "200" ]; then
+      echo "  Connection already exists (ID $EXISTING_ID), settings refreshed"
+    else
+      echo "  ERROR: could not update connection $CONTAINER_NAME (ID $EXISTING_ID), HTTP $CODE"
+      FAILURES=$((FAILURES + 1))
+    fi
   else
-    echo "  Connection created (ID $CONN_ID)"
+    CONN_RESPONSE=$(curl -s -X POST "${API}/connections?token=${TOKEN}" \
+      -H "Content-Type: application/json" -d "$CONN_BODY")
+    CONN_ID=$(echo "$CONN_RESPONSE" | grep -o '"identifier":"[^"]*"' | cut -d'"' -f4)
+    if [ -n "$CONN_ID" ]; then
+      echo "  Connection created (ID $CONN_ID)"
+    else
+      echo "  ERROR: connection creation failed for $CONTAINER_NAME"
+      echo "  Response: $CONN_RESPONSE"
+      FAILURES=$((FAILURES + 1))
+    fi
   fi
 done
 
@@ -165,27 +205,50 @@ echo "=== Step 4: Creating student accounts with access to the pool ==="
 
 for i in $(seq 1 $NUM_STUDENTS); do
   STUDENT_USER="student${i}"
-
-  echo "--- Creating user: $STUDENT_USER ---"
-  curl -s -X POST "${API}/users?token=${TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "{
+  USER_BODY="{
       \"username\": \"${STUDENT_USER}\",
       \"password\": \"${STUDENT_PASSWORD}\",
       \"attributes\": {}
-    }" > /dev/null
+    }"
+
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${API}/users?token=${TOKEN}" \
+    -H "Content-Type: application/json" -d "$USER_BODY")
+  if [ "$CODE" = "200" ]; then
+    echo "  $STUDENT_USER created"
+  else
+    # Most likely the account already exists: make sure its password matches STUDENT_PASSWORD.
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "${API}/users/${STUDENT_USER}?token=${TOKEN}" \
+      -H "Content-Type: application/json" -d "$USER_BODY")
+    if [ "$CODE" = "204" ] || [ "$CODE" = "200" ]; then
+      echo "  $STUDENT_USER already existed, password reset to STUDENT_PASSWORD"
+    else
+      echo "  ERROR: could not create or update $STUDENT_USER (HTTP $CODE)"
+      FAILURES=$((FAILURES + 1))
+      continue
+    fi
+  fi
 
   # Grant this user READ access to the balancing group
-  curl -s -X PATCH "${API}/users/${STUDENT_USER}/permissions?token=${TOKEN}" \
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH "${API}/users/${STUDENT_USER}/permissions?token=${TOKEN}" \
     -H "Content-Type: application/json" \
     -d "[{
       \"op\": \"add\",
       \"path\": \"/connectionGroupPermissions/${GROUP_ID}\",
       \"value\": \"READ\"
-    }]" > /dev/null
-
-  echo "  $STUDENT_USER created and granted access to '${CONNECTION_GROUP_NAME}'"
+    }]")
+  if [ "$CODE" = "204" ] || [ "$CODE" = "200" ]; then
+    echo "  $STUDENT_USER can access '${CONNECTION_GROUP_NAME}'"
+  else
+    echo "  ERROR: could not grant $STUDENT_USER access to '${CONNECTION_GROUP_NAME}' (HTTP $CODE)"
+    FAILURES=$((FAILURES + 1))
+  fi
 done
+
+if [ "$FAILURES" -gt 0 ]; then
+  echo ""
+  echo "=== FAILED: $FAILURES Guacamole step(s) failed — see ERROR lines above ===" >&2
+  exit 1
+fi
 
 echo ""
 echo "=== DONE ==="

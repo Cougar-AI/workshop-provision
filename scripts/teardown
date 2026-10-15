@@ -40,7 +40,7 @@ done
 echo "This will permanently remove:"
 echo "  - Docker containers: workshop-1 through workshop-${NUM_CONTAINERS}"
 echo "  - Guacamole connections: workshop-1 through workshop-${NUM_CONTAINERS}"
-echo "  - The '${CONNECTION_GROUP_NAME}' connection group"
+echo "  - The '${CONNECTION_GROUP_NAME}' connection group (only if no workshop containers remain)"
 echo "  - Guacamole accounts: student1 through student${NUM_STUDENTS}"
 echo ""
 
@@ -112,7 +112,14 @@ for k, v in data.items():
         break
 " 2>/dev/null)
 
-if [ -n "$GROUP_ID" ]; then
+# Deleting a group also deletes every connection inside it, so only remove it once no
+# workshop containers are left. A partial teardown (--containers 2 of 5) keeps the group
+# so workshop-3..5 stay reachable.
+REMAINING=$(docker ps -a --filter "name=^workshop-[0-9]+$" --format '{{.Names}}' | wc -l)
+
+if [ -n "$GROUP_ID" ] && [ "$REMAINING" -gt 0 ]; then
+  echo "  Keeping connection group '${CONNECTION_GROUP_NAME}' (ID $GROUP_ID): $REMAINING workshop container(s) still running"
+elif [ -n "$GROUP_ID" ]; then
   curl -s -X DELETE "${API}/connectionGroups/${GROUP_ID}?token=${TOKEN}" > /dev/null
   echo "  Removed connection group '${CONNECTION_GROUP_NAME}' (ID $GROUP_ID)"
 else
@@ -137,5 +144,5 @@ echo "  Build cache pruned."
 
 echo ""
 echo "=== CLEANUP COMPLETE ==="
-echo "All workshop containers, connections, the connection group, and student accounts have been removed."
+echo "Removed workshop-1..${NUM_CONTAINERS}, their connections, and student1..${NUM_STUDENTS}."
 echo "The workshop-desktop:latest image itself was NOT removed - run 'docker rmi workshop-desktop:latest' manually if you want to remove that too."
