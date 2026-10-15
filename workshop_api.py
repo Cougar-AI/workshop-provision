@@ -234,9 +234,11 @@ def _do_pipeline_run(data):
     stages = []
     if not skip_build:
         stages.append(("building image", ["docker", "build", "-t", DOCKER_IMAGE, str(DOCKERFILE_DIR)]))
+    # Pipeline is the "start from scratch" flow: replace running containers so they pick up
+    # the (re)built image and repo. Plain provision leaves running ones alone.
     stages.append((
         "provisioning containers",
-        [str(PROVISION_SCRIPT), "--containers", str(int(num_containers)), "--students", str(int(num_students))],
+        [str(PROVISION_SCRIPT), "--containers", str(int(num_containers)), "--students", str(int(num_students)), "--recreate"],
     ))
 
     job_id = _launch_stages(
