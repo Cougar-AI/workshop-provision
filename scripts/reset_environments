@@ -9,6 +9,29 @@ source "${SCRIPT_DIR}/../.env"
 NUM_CONTAINERS=$num_containers
 DOCKER_IMAGE="workshop-desktop:latest"
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --containers)
+      NUM_CONTAINERS="$2"
+      shift 2
+      ;;
+    -h|--help)
+      echo "Usage: $0 [--containers N]"
+      echo "  --containers N   Number of workshop-N containers to reset (default: $NUM_CONTAINERS)"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      exit 1
+      ;;
+  esac
+done
+
+if ! [[ "$NUM_CONTAINERS" =~ ^[0-9]+$ ]] || [ "$NUM_CONTAINERS" -eq 0 ]; then
+  echo "ERROR: --containers must be a positive integer, got: '$NUM_CONTAINERS'" >&2
+  exit 1
+fi
+
 echo "=== Workshop Teardown: $(date) ==="
 echo "Recreating $NUM_CONTAINERS containers fresh from $DOCKER_IMAGE..."
 
